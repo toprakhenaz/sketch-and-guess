@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Brain, Users, Palette } from 'lucide-react';
+import { Brain, Users, Palette, Brush } from 'lucide-react';
 import { Header } from '@/components/layout/Header';
 
 export default function HomePage() {
@@ -12,10 +12,10 @@ export default function HomePage() {
         <div className="text-center space-y-4">
           <Palette className="mx-auto h-16 w-16 text-primary" />
           <h1 className="text-5xl font-headline font-bold tracking-tight text-primary">
-            Welcome to Artful Guesser!
+            Artful Guesser'a Hoş Geldiniz!
           </h1>
           <p className="text-xl text-foreground/80 max-w-2xl mx-auto">
-            Unleash your creativity and guessing skills. Choose a mode below to start the fun!
+            Yaratıcılığınızı ve tahmin becerilerinizi serbest bırakın. Eğlenceye başlamak için aşağıdan bir mod seçin!
           </p>
         </div>
 
@@ -23,14 +23,29 @@ export default function HomePage() {
           <Card className="hover:shadow-xl transition-shadow duration-300">
             <CardHeader className="items-center text-center">
               <Brain className="h-12 w-12 text-accent mb-2" />
-              <CardTitle className="text-2xl font-headline">AI Guessing Mode</CardTitle>
+              <CardTitle className="text-2xl font-headline">Yapay Zeka Tahmin Modu</CardTitle>
               <CardDescription>
-                Challenge the AI! Guess what the AI is thinking of based on its prompts.
+                Yapay zekaya meydan okuyun! Yapay zekanın komutlarına göre ne düşündüğünü tahmin edin.
               </CardDescription>
             </CardHeader>
             <CardContent className="text-center">
               <Button asChild size="lg" className="bg-primary hover:bg-primary/90 text-primary-foreground w-full">
-                <Link href="/ai-game">Play AI Mode</Link>
+                <Link href="/ai-game">AI Modunda Oyna</Link>
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card className="hover:shadow-xl transition-shadow duration-300">
+            <CardHeader className="items-center text-center">
+              <Brush className="h-12 w-12 text-accent mb-2" />
+              <CardTitle className="text-2xl font-headline">Sen Çiz, AI Tahmin Etsin</CardTitle>
+              <CardDescription>
+                Bir şeyler çizin ve yapay zekanın ne çizdiğinizi tahmin etmesini izleyin. Yaratıcılığınızı sına!
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="text-center">
+              <Button asChild size="lg" className="bg-primary hover:bg-primary/90 text-primary-foreground w-full">
+                <Link href="/user-draws-game">Çiz ve Oyna</Link>
               </Button>
             </CardContent>
           </Card>
@@ -38,21 +53,21 @@ export default function HomePage() {
           <Card className="hover:shadow-xl transition-shadow duration-300">
             <CardHeader className="items-center text-center">
               <Users className="h-12 w-12 text-accent mb-2" />
-              <CardTitle className="text-2xl font-headline">Multiplayer Mode</CardTitle>
+              <CardTitle className="text-2xl font-headline">Çok Oyunculu Mod</CardTitle>
               <CardDescription>
-                Draw and guess with friends or other players online. (Coming Soon!)
+                Arkadaşlarınızla veya diğer oyuncularla çevrimiçi çizin ve tahmin edin. (Çok Yakında!)
               </CardDescription>
             </CardHeader>
             <CardContent className="text-center">
               <Button asChild size="lg" className="bg-primary hover:bg-primary/90 text-primary-foreground w-full" disabled>
-                <Link href="/multiplayer-game">Play Multiplayer</Link>
+                <Link href="/multiplayer-game">Çok Oyunculu Oyna</Link>
               </Button>
             </CardContent>
           </Card>
         </div>
       </main>
       <footer className="text-center p-4 text-sm text-muted-foreground">
-        © {new Date().getFullYear()} Artful Guesser. All rights reserved.
+        © {new Date().getFullYear()} Artful Guesser. Tüm hakları saklıdır.
       </footer>
     </div>
   );

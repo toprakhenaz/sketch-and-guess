@@ -39,8 +39,6 @@ export default function UserDrawsGamePage() {
       return;
     }
     
-    // Basic check if canvas is empty (all white)
-    // This is a simplified check. A more robust check would analyze pixel data.
     const canvas = document.createElement('canvas');
     const img = new Image();
     img.onload = async () => {
@@ -53,10 +51,8 @@ export default function UserDrawsGamePage() {
         const data = imageData.data;
         let isEffectivelyEmpty = true;
         for (let i = 0; i < data.length; i += 4) {
-            // Check if pixel is not white (considering alpha for PNG)
-            if (data[i] < 250 || data[i+1] < 250 || data[i+2] < 250 ) { // Check if not white-ish
-                 // Check for non-transparent pixels if it's PNG
-                if (data[i+3] > 10) { // alpha threshold
+            if (data[i] < 250 || data[i+1] < 250 || data[i+2] < 250 ) { 
+                if (data[i+3] > 10) { 
                     isEffectivelyEmpty = false;
                     break;
                 }
