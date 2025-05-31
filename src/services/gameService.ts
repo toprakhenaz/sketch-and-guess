@@ -12,7 +12,8 @@ import {
   arrayUnion,
   onSnapshot,
   type Unsubscribe,
-  deleteField
+  deleteField,
+  type Timestamp // Ensure Timestamp is imported if used directly as a type hint here
 } from 'firebase/firestore';
 import { generateDrawingPrompt } from '@/ai/flows/generate-drawing-prompt'; // Kelime üretmek için
 
@@ -32,7 +33,7 @@ export async function createGameSession(hostPlayer: Player, maxRounds: number = 
     currentRound: 0,
     maxRounds,
     guesses: [],
-    createdAt: serverTimestamp() as Timestamp, // Firestore'a yazarken atanacak
+    createdAt: serverTimestamp() as Timestamp,
     settings: {
       maxPlayers,
       gameMode: 'classic',
@@ -65,13 +66,11 @@ export async function joinGameSession(gameId: string, player: Player): Promise<{
   }
 
   if (gameData.players[player.id]) {
-     // Oyuncu zaten oyunda, isActive durumunu güncelle
     await updateDoc(gameRef, {
       [`players.${player.id}.isActive`]: true,
     });
     return { success: true, message: "Oyuna tekrar katıldınız."};
   }
-
 
   const newPlayerOrder = [...gameData.playerOrder, player.id];
   await updateDoc(gameRef, {
@@ -81,7 +80,7 @@ export async function joinGameSession(gameId: string, player: Player): Promise<{
   return { success: true };
 }
 
-export function getGameSessionStream(gameId: string, onUpdate: (game: Game | null) => void): Unsubscribe {
+export async function getGameSessionStream(gameId: string, onUpdate: (game: Game | null) => void): Promise<Unsubscribe> {
   const gameRef = doc(db, 'games', gameId);
   return onSnapshot(gameRef, (docSnap) => {
     if (docSnap.exists()) {
@@ -124,14 +123,13 @@ export async function removePlayerFromGame(gameId: string, playerId: string): Pr
     const gameData = gameSnap.data() as Game;
     const newPlayerOrder = gameData.playerOrder.filter(id => id !== playerId);
     
-    // Eğer ayrılan oyuncu host ise ve başka oyuncu varsa yeni host ata
     let newHostId = gameData.hostId;
     if (gameData.hostId === playerId && newPlayerOrder.length > 0) {
-      newHostId = newPlayerOrder[0]; // Sıradaki ilk oyuncu yeni host olur
+      newHostId = newPlayerOrder[0]; 
     }
 
     const updates: any = {
-      [`players.${playerId}`]: deleteField(), // Oyuncuyu sil
+      [`players.${playerId}`]: deleteField(), 
       playerOrder: newPlayerOrder,
     };
 
@@ -142,16 +140,9 @@ export async function removePlayerFromGame(gameId: string, playerId: string): Pr
       }
     }
     
-    // Eğer host değiştiyse ve eski host artık oyuncu değilse, isHost flag'ini kaldır
-    if (gameData.hostId === playerId && gameData.players[newHostId] && newHostId !== playerId) {
-         updates[`players.${gameData.hostId}.isHost`] = false; // Bu satır gereksiz çünkü oyuncu siliniyor
-    }
-
-
     await updateDoc(gameRef, updates);
   }
 }
-
 
 export async function generateAndSetWord(gameId: string, difficulty: 'easy' | 'medium' | 'hard' = 'medium'): Promise<string | null> {
   try {
@@ -163,7 +154,6 @@ export async function generateAndSetWord(gameId: string, difficulty: 'easy' | 'm
     return null;
   } catch (error) {
     console.error("Error generating word:", error);
-    // Fallback to a simple word list if AI fails
     const fallbackWords = ["kedi", "ev", "güneş", "ağaç", "araba", "kitap", "masa", "sandalye", "top", "balık"];
     const randomWord = fallbackWords[Math.floor(Math.random() * fallbackWords.length)];
     await updateGameSession(gameId, { currentWord: randomWord });
@@ -179,14 +169,14 @@ export async function startGame(gameId: string): Promise<void> {
   if (gameData.playerOrder.length === 0) throw new Error("Oyuncu yok!");
 
   const firstDrawerId = gameData.playerOrder[0];
-  await generateAndSetWord(gameId, 'medium'); // Kelimeyi oluştur ve ata
+  await generateAndSetWord(gameId, 'medium'); 
 
   await updateGameSession(gameId, {
     status: 'drawing',
     currentDrawerId: firstDrawerId,
     currentRound: 1,
     currentPlayerIndexInOrder: 0,
-    guesses: [], // Tahminleri sıfırla
+    guesses: [], 
     roundStartTime: serverTimestamp() as Timestamp,
   });
 }
@@ -199,39 +189,30 @@ export async function nextTurn(gameId: string): Promise<void> {
   let nextPlayerIndex = (gameData.currentPlayerIndexInOrder + 1);
   let nextRound = gameData.currentRound;
 
-  // Eğer tüm oyuncular bu turda çizdiyse, yeni bir raunda geç
-  if (nextPlayerIndex >= gameData.playerOrder.length) {
-    nextPlayerIndex = 0;
-    nextRound += 1;
-  }
-  
-  // Oyuncuları filtrele (aktif olmayanları çıkar)
-  const activePlayers = gameData.playerOrder.filter(pid => gameData.players[pid]?.isActive);
-  if (activePlayers.length === 0) {
+  const activePlayersOriginalOrder = gameData.playerOrder.filter(pid => gameData.players[pid]?.isActive);
+  if (activePlayersOriginalOrder.length === 0) {
     await updateGameSession(gameId, { status: 'game-over', currentWord: "Aktif oyuncu kalmadı." });
     return;
   }
   
-  // Eğer index aktif oyuncu listesinin dışındaysa sıfırla
-  if (nextPlayerIndex >= activePlayers.length) {
-      nextPlayerIndex = 0;
-      // Eğer tur da ilerlemiyorsa ve index sıfırlanıyorsa bu bir sorun olabilir, ama şimdilik böyle bırakalım.
+  if (nextPlayerIndex >= activePlayersOriginalOrder.length) {
+    nextPlayerIndex = 0;
+    nextRound += 1;
   }
 
-
   if (nextRound > gameData.maxRounds) {
-    // Oyun bitti
     await updateGameSession(gameId, { status: 'game-over', currentWord: "Oyun Bitti!", currentDrawingDataUrl: "", currentDrawerId: "" });
   } else {
-    const nextDrawerId = activePlayers[nextPlayerIndex];
+    const nextDrawerId = activePlayersOriginalOrder[nextPlayerIndex];
     await generateAndSetWord(gameId, 'medium');
     await updateGameSession(gameId, {
       status: 'drawing',
       currentDrawerId: nextDrawerId,
       currentRound: nextRound,
-      currentPlayerIndexInOrder: gameData.playerOrder.indexOf(nextDrawerId), // Orijinal playerOrder'daki indexini kullan
+      // Ensure currentPlayerIndexInOrder refers to the index in the *original* playerOrder array
+      currentPlayerIndexInOrder: gameData.playerOrder.indexOf(nextDrawerId), 
       guesses: [],
-      currentDrawingDataUrl: "", // Önceki çizimi temizle
+      currentDrawingDataUrl: "", 
       roundStartTime: serverTimestamp() as Timestamp,
     });
   }

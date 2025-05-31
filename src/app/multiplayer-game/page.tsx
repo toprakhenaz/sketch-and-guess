@@ -24,7 +24,7 @@ import {
   startGame,
   nextTurn
 } from '@/services/gameService';
-import { Timestamp } from 'firebase/firestore';
+import { Timestamp, type Unsubscribe } from 'firebase/firestore';
 
 const generateUserId = () => `user_${Math.random().toString(36).substring(2, 10)}`;
 
@@ -64,47 +64,72 @@ export default function MultiplayerGamePage() {
     const gameIdFromUrl = searchParams.get('gameId');
     if (gameIdFromUrl) {
       setGameId(gameIdFromUrl);
-      setJoinGameIdInput(gameIdFromUrl); // input'u doldur
+      setJoinGameIdInput(gameIdFromUrl);
     }
   }, [searchParams]);
 
   useEffect(() => {
-    if (!gameId || !userId) return;
-
-    setIsLoading(true);
-    const unsubscribe = getGameSessionStream(gameId, (data) => {
-      setGameData(data);
+    if (!gameId || !userId) {
+      setGameData(null);
       setIsLoading(false);
+      return;
+    }
+  
+    let activeUnsubscribe: Unsubscribe | null = null;
+    let isMounted = true;
+  
+    const streamCallback = (data: Game | null) => {
+      if (!isMounted) return;
+  
+      setGameData(data);
+      setIsLoading(false); 
+  
       if (!data) {
         setErrorMsg("Oyun bulunamadı veya silinmiş.");
-        setGameId(null);
-        router.replace('/multiplayer-game'); // URL'den gameId'yi kaldır
+        setGameId(null); 
+        router.replace('/multiplayer-game');
       } else if (data.players[userId] && !data.players[userId].isActive && data.status !== 'lobby') {
-        // Oyuncu oyundan atılmış veya ayrılmış ama ID hala URL'de
         setErrorMsg("Bu oyundan ayrıldınız veya çıkarıldınız.");
-        setGameId(null);
+        setGameId(null); 
         router.replace('/multiplayer-game');
       }
-    });
-
-    return () => unsubscribe();
+    };
+  
+    const initializeStream = async () => {
+      setIsLoading(true); 
+      setErrorMsg(''); 
+      try {
+        // getGameSessionStream is now async
+        activeUnsubscribe = await getGameSessionStream(gameId, streamCallback);
+      } catch (error) {
+        console.error("Error initializing game session stream:", error);
+        if (isMounted) {
+          setErrorMsg("Oyun güncellemelerine bağlanılamadı.");
+          setIsLoading(false);
+        }
+      }
+    };
+  
+    initializeStream();
+  
+    return () => {
+      isMounted = false;
+      if (activeUnsubscribe) {
+        activeUnsubscribe();
+      }
+    };
   }, [gameId, userId, router]);
   
-  // Oyuncu ayrılma/inactive olma durumu
   useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       if (gameId && userId && gameData?.players[userId]?.isActive) {
-        // updatePlayerStatus(gameId, userId, false); // Bu senkron olmadığı için Firestore kurallarıyla yönetmek daha iyi
+        // Consider Firestore rules for cleanup or a more robust presence system
       }
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
-      // Component unmount olduğunda (örneğin sayfadan ayrılma)
-      if (gameId && userId && gameData?.players[userId]?.isActive) {
-         // updatePlayerStatus(gameId, userId, false); // İsteğe bağlı, anlık güncelleme için
-      }
     };
   }, [gameId, userId, gameData]);
 
@@ -209,8 +234,6 @@ export default function MultiplayerGamePage() {
     }
     setIsLoading(true);
     try {
-      // Puanlama mantığı burada eklenebilir.
-      // Kimlerin doğru tahmin ettiğini kontrol et.
       const correctWord = gameData.currentWord?.toLowerCase().trim();
       let roundResults = { word: gameData.currentWord || "", drawerId: gameData.currentDrawerId || "", correctGuessers: [] as string[] };
       
@@ -219,13 +242,12 @@ export default function MultiplayerGamePage() {
         if (guessEntry.guess.toLowerCase().trim() === correctWord) {
           roundResults.correctGuessers.push(guessEntry.playerId);
           if (updatedPlayers[guessEntry.playerId]) {
-            updatedPlayers[guessEntry.playerId].score += 10; // Doğru tahmin için 10 puan
+            updatedPlayers[guessEntry.playerId].score += 10; 
           }
         }
       });
-      // Çizer de puan alabilir (örneğin, en az bir kişi doğru tahmin ettiyse)
       if (roundResults.correctGuessers.length > 0 && gameData.currentDrawerId && updatedPlayers[gameData.currentDrawerId]) {
-        updatedPlayers[gameData.currentDrawerId].score += 5; // Çizer için 5 puan
+        updatedPlayers[gameData.currentDrawerId].score += 5; 
       }
 
       await updateGameSession(gameId, { players: updatedPlayers, roundResults });
@@ -242,7 +264,7 @@ export default function MultiplayerGamePage() {
     if (drawingCanvasRef.current) {
       drawingCanvasRef.current.clearCanvas();
       if (gameId) {
-         updateGameSession(gameId, { currentDrawingDataUrl: "" }); // Clear drawing on server too
+         updateGameSession(gameId, { currentDrawingDataUrl: "" }); 
       }
     }
   };
@@ -259,8 +281,7 @@ export default function MultiplayerGamePage() {
     if (gameId && userId) {
       setIsLoading(true);
       try {
-        await updatePlayerStatus(gameId, userId, false); // Oyuncuyu pasif yap
-        // Alternatif olarak removePlayerFromGame(gameId, userId); // Tamamen çıkar
+        await updatePlayerStatus(gameId, userId, false); 
         toast({title: "Oyundan Ayrıldın", description: "Başarıyla oyundan ayrıldınız."});
       } catch (error) {
         console.error("Error leaving game:", error);
@@ -274,7 +295,6 @@ export default function MultiplayerGamePage() {
     }
   };
 
-  // Zamanlayıcı için useEffect
   useEffect(() => {
     if (timerIntervalRef.current) {
       clearInterval(timerIntervalRef.current);
@@ -294,17 +314,13 @@ export default function MultiplayerGamePage() {
         if (remaining <= 0) {
           setTimeLeft(0);
           if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-          // Zaman dolduğunda otomatik sonraki tura geçme (sadece host için)
-          if (userId === gameData.hostId && gameData.status !== 'round-over') {
-            // updateGameSession(gameId!, { status: 'round-over' }); // veya direkt nextTurn
-            // handleNextTurn(); // Bu çakışmalara neden olabilir, host'un manuel ilerlemesi daha iyi olabilir.
-            // Şimdilik sadece durumu 'round-over' yapalım
-             updateGameSession(gameId!, { status: 'round-over' });
+          if (userId === gameData.hostId && gameData.status !== 'round-over' && gameId) {
+             updateGameSession(gameId, { status: 'round-over' });
              toast({ title: "Süre Doldu!", description: "Bu turun süresi doldu. Host sonraki tura geçebilir." });
           }
         }
       };
-      updateTimer(); // Hemen güncelle
+      updateTimer(); 
       timerIntervalRef.current = setInterval(updateTimer, 1000);
     } else {
       setTimeLeft(null);
@@ -314,7 +330,7 @@ export default function MultiplayerGamePage() {
         clearInterval(timerIntervalRef.current);
       }
     };
-  }, [gameData, userId, gameId]);
+  }, [gameData, userId, gameId, toast]);
 
 
   if (!userId) {
@@ -326,7 +342,6 @@ export default function MultiplayerGamePage() {
     );
   }
   
-  // Lobi Ekranı
   if (!gameId || !gameData) {
     return (
       <div className="flex flex-col min-h-screen">
@@ -375,7 +390,6 @@ export default function MultiplayerGamePage() {
     );
   }
 
-  // Oyun Odası Ekranı
   const isHost = gameData.hostId === userId;
   const isMyTurnToDraw = gameData.currentDrawerId === userId;
   const activePlayers = Object.values(gameData.players).filter(p => p.isActive);
@@ -389,7 +403,7 @@ export default function MultiplayerGamePage() {
            <XCircle className="h-16 w-16 text-destructive" />
            <h1 className="text-3xl font-bold">Oyundan Ayrıldınız</h1>
            <p className="text-muted-foreground">Bu oyunda artık aktif değilsiniz.</p>
-           <Button asChild variant="default" size="lg" onClick={() => {
+           <Button variant="default" size="lg" onClick={() => {
              setGameId(null);
              setGameData(null);
              router.replace('/multiplayer-game');
@@ -426,7 +440,6 @@ export default function MultiplayerGamePage() {
         {errorMsg && <Alert variant="destructive"><AlertTriangle className="h-4 w-4" /><AlertTitle>Hata!</AlertTitle><AlertDescription>{errorMsg}</AlertDescription></Alert>}
         
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {/* Sol Panel: Oyuncular ve Skorlar */}
           <Card className="md:col-span-1 h-fit">
             <CardHeader>
               <CardTitle className="flex items-center"><Users className="mr-2 h-5 w-5" /> Oyuncular ({activePlayers.length}/{gameData.settings.maxPlayers})</CardTitle>
@@ -447,7 +460,6 @@ export default function MultiplayerGamePage() {
             </CardContent>
           </Card>
 
-          {/* Orta Panel: Oyun Alanı */}
           <div className="md:col-span-2 space-y-4">
             {gameData.status === 'lobby' && (
               <Card>
@@ -458,7 +470,7 @@ export default function MultiplayerGamePage() {
                 <CardContent className="text-center space-y-4">
                   <p>Oyuncuların katılması bekleniyor... Davet etmek için Oyun ID'sini paylaşın: <strong className="text-accent">{gameId}</strong></p>
                   {isHost && (
-                    <Button onClick={handleStartGame} disabled={isLoading || activePlayers.length < 1 /* Min 2 oyuncu daha iyi olur ama test için 1 yeterli */}>
+                    <Button onClick={handleStartGame} disabled={isLoading || activePlayers.length < 1 }>
                       {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null} Oyunu Başlat
                     </Button>
                   )}
@@ -497,7 +509,7 @@ export default function MultiplayerGamePage() {
                       ) : (
                         <div className="w-full max-w-md h-[350px] mx-auto border rounded-md bg-muted flex items-center justify-center">
                           <p className="text-muted-foreground">
-                            {gameData.status === 'drawing' ? `${gameData.players[gameData.currentDrawerId!]?.displayName} çiziyor...` : "Çizim alanı"}
+                            {gameData.status === 'drawing' && gameData.currentDrawerId ? `${gameData.players[gameData.currentDrawerId]?.displayName} çiziyor...` : "Çizim alanı"}
                           </p>
                         </div>
                       )
@@ -522,12 +534,10 @@ export default function MultiplayerGamePage() {
                         </CardContent>
                       </Card>
                     )}
-
-
                   </CardContent>
                 </Card>
                 
-                {gameData.status !== 'drawing' && gameData.status !== 'lobby' && !isMyTurnToDraw && gameData.status !== 'game-over' && gameData.status !== 'round-over' && (
+                {gameData.status === 'guessing' && !isMyTurnToDraw && (
                   <Card>
                     <CardHeader><CardTitle>Tahminin Ne?</CardTitle></CardHeader>
                     <CardContent className="flex gap-2">
@@ -536,10 +546,10 @@ export default function MultiplayerGamePage() {
                         placeholder="Tahminini yaz..." 
                         value={userGuess}
                         onChange={(e) => setUserGuess(e.target.value)}
-                        disabled={isLoading || gameData.guesses.some(g => g.playerId === userId) || gameData.status !== 'guessing'}
+                        disabled={isLoading || gameData.guesses.some(g => g.playerId === userId)}
                         maxLength={50}
                       />
-                      <Button onClick={handleGuessSubmit} disabled={isLoading || !userGuess.trim() || gameData.guesses.some(g => g.playerId === userId) || gameData.status !== 'guessing'}>
+                      <Button onClick={handleGuessSubmit} disabled={isLoading || !userGuess.trim() || gameData.guesses.some(g => g.playerId === userId)}>
                         <Send className="mr-2 h-4 w-4" /> Gönder
                       </Button>
                     </CardContent>
@@ -552,12 +562,11 @@ export default function MultiplayerGamePage() {
                     {gameData.status === 'round-over' ? 'Sıradaki Tur/Çizer' : 'Turu Bitir / Sıradaki Çizer'}
                   </Button>
                 )}
-                {isMyTurnToDraw && gameData.status === 'drawing' && (
-                   <Button onClick={() => updateGameSession(gameId!, { status: 'guessing' })} variant="secondary" className="w-full mt-2">
+                {isMyTurnToDraw && gameData.status === 'drawing' && gameId && (
+                   <Button onClick={() => updateGameSession(gameId, { status: 'guessing' })} variant="secondary" className="w-full mt-2">
                     Çizimi Bitirdim, Tahminleri Başlat
                    </Button>
                 )}
-
               </>
             )}
              {gameData.status === 'game-over' && (
@@ -574,7 +583,7 @@ export default function MultiplayerGamePage() {
                        </div>
                     ))}
                     {isHost && (
-                       <Button onClick={handleCreateGame} className="mt-6"> <!-- Yeni oyun oluşturmak için -->
+                       <Button onClick={handleCreateGame} className="mt-6">
                          <PlusCircle className="mr-2 h-4 w-4" /> Tekrar Lobiye Dön ve Yeni Oyun Oluştur
                        </Button>
                     )}
@@ -591,13 +600,11 @@ export default function MultiplayerGamePage() {
                 </Card>
             )}
 
-
-            {/* Tahminler Listesi */}
             {gameData.guesses && gameData.guesses.length > 0 && (gameData.status === 'guessing' || gameData.status === 'round-over' || gameData.status === 'drawing') && (
               <Card>
                 <CardHeader><CardTitle>Yapılan Tahminler</CardTitle></CardHeader>
                 <CardContent className="max-h-48 overflow-y-auto space-y-1">
-                  {gameData.guesses.slice().sort((a,b) => (a.timestamp as Timestamp)?.toDate().getTime() - (b.timestamp as Timestamp)?.toDate().getTime()).map((g, index) => (
+                  {gameData.guesses.slice().sort((a,b) => ((a.timestamp as Timestamp)?.toDate().getTime() || 0) - ((b.timestamp as Timestamp)?.toDate().getTime() || 0)).map((g, index) => (
                     <p key={index} className="text-sm">
                       <span className="font-semibold">{g.displayName}:</span> {
                         (gameData.status === 'round-over' || userId === gameData.hostId || userId === g.playerId || (gameData.roundResults?.correctGuessers?.includes(g.playerId) && gameData.roundResults?.word.toLowerCase().trim() === g.guess.toLowerCase().trim())) 
