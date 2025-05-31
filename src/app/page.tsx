@@ -22,21 +22,6 @@ export default function HomePage() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 w-full max-w-3xl">
           <Card className="hover:shadow-xl transition-shadow duration-300">
             <CardHeader className="items-center text-center">
-              <Brain className="h-12 w-12 text-accent mb-2" />
-              <CardTitle className="text-2xl font-headline">Yapay Zeka Tahmin Modu</CardTitle>
-              <CardDescription>
-                Yapay zekaya meydan okuyun! Yapay zekanın komutlarına göre ne düşündüğünü tahmin edin.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="text-center">
-              <Button asChild size="lg" className="bg-primary hover:bg-primary/90 text-primary-foreground w-full">
-                <Link href="/ai-game">AI Modunda Oyna</Link>
-              </Button>
-            </CardContent>
-          </Card>
-
-          <Card className="hover:shadow-xl transition-shadow duration-300">
-            <CardHeader className="items-center text-center">
               <Brush className="h-12 w-12 text-accent mb-2" />
               <CardTitle className="text-2xl font-headline">Sen Çiz, AI Tahmin Etsin</CardTitle>
               <CardDescription>
