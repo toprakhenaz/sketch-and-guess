@@ -1,4 +1,3 @@
-
 'use server';
 import { db } from '@/lib/firebase';
 import type { Game, Player, GameGuessEntry } from '@/types/game';
@@ -93,22 +92,6 @@ export async function joinGameSession(gameId: string, player: Player): Promise<{
   }
 }
 
-export async function getGameSessionStream(gameId: string, onUpdate: (game: Game | null) => void): Promise<Unsubscribe> {
-  const gameRef = doc(db, 'games', gameId);
-  // No specific try-catch here as onSnapshot handles errors via its error callback (not used here explicitly)
-  // or by stopping the listener. The caller should handle if the stream stops unexpectedly.
-  return onSnapshot(gameRef, (docSnap) => {
-    if (docSnap.exists()) {
-      onUpdate(docSnap.data() as Game);
-    } else {
-      onUpdate(null);
-    }
-  }, (error) => {
-    console.error("Error in getGameSessionStream listener:", error);
-    onUpdate(null); // Notify caller of an error state
-  });
-}
-
 export async function updateGameSession(gameId: string, updates: Partial<Game>): Promise<void> {
   const gameRef = doc(db, 'games', gameId);
   try {
@@ -125,7 +108,7 @@ export async function addGuessToGame(gameId: string, playerId: string, displayNa
     playerId,
     displayName,
     guess,
-    timestamp: serverTimestamp() as Timestamp,
+    timestamp: new Date() as any,
   };
   try {
     await updateDoc(gameRef, {
@@ -177,24 +160,18 @@ export async function removePlayerFromGame(gameId: string, playerId: string): Pr
 }
 
 export async function generateAndSetWord(gameId: string, difficulty: 'easy' | 'medium' | 'hard' = 'medium'): Promise<string | null> {
+  // Multiplayer için sadece kısa kelimelerden rastgele seç
+  const fallbackWords = [
+    "kedi", "ev", "güneş", "ağaç", "araba", "kitap", "masa", "sandalye", "top", "balık",
+    "elma", "uçak", "telefon", "çanta", "kuş", "köpek", "çiçek", "yıldız", "kalp", "dağ"
+  ];
+  const randomWord = fallbackWords[Math.floor(Math.random() * fallbackWords.length)];
   try {
-    const result = await generateDrawingPrompt({ difficulty });
-    if (result.prompt) {
-      await updateGameSession(gameId, { currentWord: result.prompt });
-      return result.prompt;
-    }
-    return null;
-  } catch (error) {
-    console.error("Error generating word with AI, using fallback:", error);
-    const fallbackWords = ["kedi", "ev", "güneş", "ağaç", "araba", "kitap", "masa", "sandalye", "top", "balık"];
-    const randomWord = fallbackWords[Math.floor(Math.random() * fallbackWords.length)];
-    try {
-      await updateGameSession(gameId, { currentWord: randomWord });
-      return randomWord;
-    } catch (updateError) {
-      console.error("Error setting fallback word:", updateError);
-      throw updateError; // Propagate if updating with fallback also fails
-    }
+    await updateGameSession(gameId, { currentWord: randomWord });
+    return randomWord;
+  } catch (updateError) {
+    console.error("Error setting fallback word:", updateError);
+    throw updateError;
   }
 }
 

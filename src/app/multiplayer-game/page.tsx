@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from 'react';
@@ -16,7 +15,6 @@ import type { Game, Player, GameGuessEntry } from '@/types/game';
 import { 
   createGameSession, 
   joinGameSession, 
-  getGameSessionStream, 
   updateGameSession,
   addGuessToGame,
   updatePlayerStatus,
@@ -24,6 +22,7 @@ import {
   startGame,
   nextTurn
 } from '@/services/gameService';
+import { getGameSessionStream } from '@/services/gameService.client';
 import { Timestamp, type Unsubscribe } from 'firebase/firestore';
 
 const generateUserId = () => `user_${Math.random().toString(36).substring(2, 10)}`;
