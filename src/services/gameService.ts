@@ -43,60 +43,80 @@ export async function createGameSession(hostPlayer: Player, maxRounds: number = 
     playerOrder: initialPlayerOrder,
     currentPlayerIndexInOrder: 0,
   };
-  await setDoc(doc(db, 'games', gameId), newGame);
-  return gameId;
+
+  try {
+    await setDoc(doc(db, 'games', gameId), newGame);
+    return gameId;
+  } catch (error) {
+    console.error("Error in createGameSession service (writing to Firestore):", error);
+    // Re-throw the error so it can be caught by the calling client-side function
+    throw error; 
+  }
 }
 
 export async function joinGameSession(gameId: string, player: Player): Promise<{success: boolean, message?: string}> {
   const gameRef = doc(db, 'games', gameId);
-  const gameSnap = await getDoc(gameRef);
+  try {
+    const gameSnap = await getDoc(gameRef);
 
-  if (!gameSnap.exists()) {
-    return { success: false, message: "Oyun bulunamadı." };
-  }
+    if (!gameSnap.exists()) {
+      return { success: false, message: "Oyun bulunamadı." };
+    }
 
-  const gameData = gameSnap.data() as Game;
+    const gameData = gameSnap.data() as Game;
 
-  if (Object.values(gameData.players).filter(p => p.isActive).length >= gameData.settings.maxPlayers && !gameData.players[player.id]?.isActive) {
-    return { success: false, message: "Oyun dolu." };
-  }
-  
-  if (gameData.status !== 'lobby' && !gameData.players[player.id]) { // Allow rejoining active players if they were disconnected
-    return { success: false, message: "Oyun zaten başlamış." };
-  }
+    if (Object.values(gameData.players).filter(p => p.isActive).length >= gameData.settings.maxPlayers && !gameData.players[player.id]?.isActive) {
+      return { success: false, message: "Oyun dolu." };
+    }
+    
+    if (gameData.status !== 'lobby' && !gameData.players[player.id]) { 
+      return { success: false, message: "Oyun zaten başlamış." };
+    }
 
-  if (gameData.players[player.id]) {
-    // Player is rejoining
+    if (gameData.players[player.id]) {
+      await updateDoc(gameRef, {
+        [`players.${player.id}.isActive`]: true,
+      });
+      return { success: true, message: "Oyuna tekrar katıldınız."};
+    }
+
+    const newPlayerOrder = [...gameData.playerOrder, player.id];
     await updateDoc(gameRef, {
-      [`players.${player.id}.isActive`]: true,
-      // playerOrder should already contain this player
+      [`players.${player.id}`]: { ...player, score: 0, isActive: true },
+      playerOrder: newPlayerOrder,
     });
-    return { success: true, message: "Oyuna tekrar katıldınız."};
+    return { success: true };
+  } catch (error) {
+    console.error("Error in joinGameSession service:", error);
+    // Provide a generic error message, but the console log will have details
+    return { success: false, message: "Oyuna katılırken bir sunucu hatası oluştu." };
   }
-
-  // New player joining
-  const newPlayerOrder = [...gameData.playerOrder, player.id];
-  await updateDoc(gameRef, {
-    [`players.${player.id}`]: { ...player, score: 0, isActive: true },
-    playerOrder: newPlayerOrder,
-  });
-  return { success: true };
 }
 
 export async function getGameSessionStream(gameId: string, onUpdate: (game: Game | null) => void): Promise<Unsubscribe> {
   const gameRef = doc(db, 'games', gameId);
+  // No specific try-catch here as onSnapshot handles errors via its error callback (not used here explicitly)
+  // or by stopping the listener. The caller should handle if the stream stops unexpectedly.
   return onSnapshot(gameRef, (docSnap) => {
     if (docSnap.exists()) {
       onUpdate(docSnap.data() as Game);
     } else {
       onUpdate(null);
     }
+  }, (error) => {
+    console.error("Error in getGameSessionStream listener:", error);
+    onUpdate(null); // Notify caller of an error state
   });
 }
 
 export async function updateGameSession(gameId: string, updates: Partial<Game>): Promise<void> {
   const gameRef = doc(db, 'games', gameId);
-  await updateDoc(gameRef, updates);
+  try {
+    await updateDoc(gameRef, updates);
+  } catch (error) {
+    console.error("Error in updateGameSession service:", error);
+    throw error;
+  }
 }
 
 export async function addGuessToGame(gameId: string, playerId: string, displayName: string, guess: string): Promise<void> {
@@ -107,43 +127,52 @@ export async function addGuessToGame(gameId: string, playerId: string, displayNa
     guess,
     timestamp: serverTimestamp() as Timestamp,
   };
-  await updateDoc(gameRef, {
-    guesses: arrayUnion(newGuess)
-  });
+  try {
+    await updateDoc(gameRef, {
+      guesses: arrayUnion(newGuess)
+    });
+  } catch (error) {
+    console.error("Error in addGuessToGame service:", error);
+    throw error;
+  }
 }
 
 export async function updatePlayerStatus(gameId: string, playerId: string, isActive: boolean): Promise<void> {
   const gameRef = doc(db, 'games', gameId);
-  const gameSnap = await getDoc(gameRef);
-  if (!gameSnap.exists()) return;
-  const gameData = gameSnap.data() as Game;
-
-  const updates: any = {
-    [`players.${playerId}.isActive`]: isActive,
-  };
-
-  // If host becomes inactive, try to assign a new host
-  if (playerId === gameData.hostId && !isActive) {
-    const activePlayers = gameData.playerOrder.filter(id => id !== playerId && gameData.players[id]?.isActive);
-    if (activePlayers.length > 0) {
-      const newHostId = activePlayers[0];
-      updates.hostId = newHostId;
-      updates[`players.${newHostId}.isHost`] = true;
-      if(gameData.players[playerId]) {
-        updates[`players.${playerId}.isHost`] = false; 
-      }
-    } else {
-      // No other active players to become host, game might need to end or wait
-      updates.status = 'lobby'; // Or 'game-over' if no one can host
+  try {
+    const gameSnap = await getDoc(gameRef);
+    if (!gameSnap.exists()) {
+      console.warn(`updatePlayerStatus: Game ${gameId} not found.`);
+      return;
     }
+    const gameData = gameSnap.data() as Game;
+
+    const updates: any = {
+      [`players.${playerId}.isActive`]: isActive,
+    };
+
+    if (playerId === gameData.hostId && !isActive) {
+      const activePlayers = gameData.playerOrder.filter(id => id !== playerId && gameData.players[id]?.isActive);
+      if (activePlayers.length > 0) {
+        const newHostId = activePlayers[0];
+        updates.hostId = newHostId;
+        updates[`players.${newHostId}.isHost`] = true;
+        if(gameData.players[playerId]) {
+          updates[`players.${playerId}.isHost`] = false; 
+        }
+      } else {
+        updates.status = 'lobby'; 
+      }
+    }
+    
+    await updateDoc(gameRef, updates);
+  } catch (error) {
+    console.error("Error in updatePlayerStatus service:", error);
+    throw error;
   }
-  
-  await updateDoc(gameRef, updates);
 }
 
 export async function removePlayerFromGame(gameId: string, playerId: string): Promise<void> {
-  // This function might be deprecated in favor of updatePlayerStatus(isActive: false)
-  // For now, it mimics setting isActive to false.
   await updatePlayerStatus(gameId, playerId, false);
 }
 
@@ -156,97 +185,102 @@ export async function generateAndSetWord(gameId: string, difficulty: 'easy' | 'm
     }
     return null;
   } catch (error) {
-    console.error("Error generating word:", error);
+    console.error("Error generating word with AI, using fallback:", error);
     const fallbackWords = ["kedi", "ev", "güneş", "ağaç", "araba", "kitap", "masa", "sandalye", "top", "balık"];
     const randomWord = fallbackWords[Math.floor(Math.random() * fallbackWords.length)];
-    await updateGameSession(gameId, { currentWord: randomWord });
-    return randomWord;
+    try {
+      await updateGameSession(gameId, { currentWord: randomWord });
+      return randomWord;
+    } catch (updateError) {
+      console.error("Error setting fallback word:", updateError);
+      throw updateError; // Propagate if updating with fallback also fails
+    }
   }
 }
 
 export async function startGame(gameId: string): Promise<void> {
-  const gameDoc = await getDoc(doc(db, 'games', gameId));
-  if (!gameDoc.exists()) throw new Error("Oyun bulunamadı");
-  const gameData = gameDoc.data() as Game;
+  try {
+    const gameDoc = await getDoc(doc(db, 'games', gameId));
+    if (!gameDoc.exists()) throw new Error("Oyun bulunamadı");
+    const gameData = gameDoc.data() as Game;
 
-  const activePlayersInOrder = gameData.playerOrder.filter(pid => gameData.players[pid]?.isActive);
-  if (activePlayersInOrder.length === 0) throw new Error("Aktif oyuncu yok!");
+    const activePlayersInOrder = gameData.playerOrder.filter(pid => gameData.players[pid]?.isActive);
+    if (activePlayersInOrder.length === 0) throw new Error("Aktif oyuncu yok!");
 
-  const firstDrawerId = activePlayersInOrder[0];
-  const firstDrawerGlobalIndex = gameData.playerOrder.indexOf(firstDrawerId);
+    const firstDrawerId = activePlayersInOrder[0];
+    const firstDrawerGlobalIndex = gameData.playerOrder.indexOf(firstDrawerId);
 
-  await generateAndSetWord(gameId, 'medium'); 
+    await generateAndSetWord(gameId, 'medium'); 
 
-  await updateGameSession(gameId, {
-    status: 'drawing',
-    currentDrawerId: firstDrawerId,
-    currentRound: 1,
-    currentPlayerIndexInOrder: firstDrawerGlobalIndex, // Store index in original playerOrder
-    guesses: [], 
-    roundStartTime: serverTimestamp() as Timestamp,
-  });
+    await updateGameSession(gameId, {
+      status: 'drawing',
+      currentDrawerId: firstDrawerId,
+      currentRound: 1,
+      currentPlayerIndexInOrder: firstDrawerGlobalIndex,
+      guesses: [], 
+      roundStartTime: serverTimestamp() as Timestamp,
+    });
+  } catch (error) {
+    console.error("Error in startGame service:", error);
+    throw error;
+  }
 }
 
 export async function nextTurn(gameId: string): Promise<void> {
-  const gameDoc = await getDoc(doc(db, 'games', gameId));
-  if (!gameDoc.exists()) throw new Error("Oyun bulunamadı");
-  let gameData = gameDoc.data() as Game; // Use let to allow re-assignment if needed after an update
+  try {
+    const gameDoc = await getDoc(doc(db, 'games', gameId));
+    if (!gameDoc.exists()) throw new Error("Oyun bulunamadı");
+    let gameData = gameDoc.data() as Game;
 
-  const activePlayerIdsInOriginalOrder = gameData.playerOrder.filter(pid => gameData.players[pid]?.isActive);
+    const activePlayerIdsInOriginalOrder = gameData.playerOrder.filter(pid => gameData.players[pid]?.isActive);
 
-  if (activePlayerIdsInOriginalOrder.length === 0) {
-    await updateGameSession(gameId, { status: 'game-over', currentWord: "Aktif oyuncu kalmadı." });
-    return;
-  }
-
-  let newCurrentPlayerGlobalIndex = gameData.currentPlayerIndexInOrder; // Index in original gameData.playerOrder
-  let nextDrawerId: string | undefined = undefined;
-
-  // Find the next active player in the original playerOrder, starting after the current one
-  for (let i = 1; i <= gameData.playerOrder.length; i++) {
-    const potentialGlobalIndex = (gameData.currentPlayerIndexInOrder + i) % gameData.playerOrder.length;
-    const potentialPlayerId = gameData.playerOrder[potentialGlobalIndex];
-    if (gameData.players[potentialPlayerId]?.isActive) {
-      nextDrawerId = potentialPlayerId;
-      newCurrentPlayerGlobalIndex = potentialGlobalIndex;
-      break;
+    if (activePlayerIdsInOriginalOrder.length === 0) {
+      await updateGameSession(gameId, { status: 'game-over', currentWord: "Aktif oyuncu kalmadı." });
+      return;
     }
-  }
 
-  if (!nextDrawerId) {
-    // This case should be caught by activePlayerIdsInOriginalOrder.length === 0, but as a fallback:
-    await updateGameSession(gameId, { status: 'game-over', currentWord: "Çizecek aktif oyuncu bulunamadı." });
-    return;
-  }
+    let newCurrentPlayerGlobalIndex = gameData.currentPlayerIndexInOrder; 
+    let nextDrawerId: string | undefined = undefined;
 
-  let newCurrentRound = gameData.currentRound;
-  // A round increments if the new designated drawer's index in the original order
-  // is less than or equal to the previous drawer's index, indicating a wrap-around.
-  // This also covers the case where the current drawer is the last in playerOrder.
-  // Also, if there's only one active player, each of their turns is a new round.
-  if (activePlayerIdsInOriginalOrder.length === 1 && gameData.currentRound > 0) {
-    // If only one active player, they start a new round each turn (after the first round has started).
-    newCurrentRound++;
-  } else if (newCurrentPlayerGlobalIndex <= gameData.currentPlayerIndexInOrder && gameData.currentRound > 0 && activePlayerIdsInOriginalOrder.length > 1) {
-    // If multiple active players and we've wrapped around the playerOrder list.
-    newCurrentRound++;
-  }
-  
-  if (newCurrentRound > gameData.maxRounds) {
-    await updateGameSession(gameId, { status: 'game-over', currentWord: "Oyun Bitti!", currentDrawingDataUrl: "", currentDrawerId: "" });
-  } else {
-    await generateAndSetWord(gameId, 'medium'); // Consider using a difficulty from gameData.settings if available
-    await updateGameSession(gameId, {
-      status: 'drawing',
-      currentDrawerId: nextDrawerId,
-      currentRound: newCurrentRound,
-      currentPlayerIndexInOrder: newCurrentPlayerGlobalIndex,
-      guesses: [],
-      currentDrawingDataUrl: "", 
-      roundStartTime: serverTimestamp() as Timestamp,
-      roundResults: deleteField() // Clear previous round results
-    });
+    for (let i = 1; i <= gameData.playerOrder.length; i++) {
+      const potentialGlobalIndex = (gameData.currentPlayerIndexInOrder + i) % gameData.playerOrder.length;
+      const potentialPlayerId = gameData.playerOrder[potentialGlobalIndex];
+      if (gameData.players[potentialPlayerId]?.isActive) {
+        nextDrawerId = potentialPlayerId;
+        newCurrentPlayerGlobalIndex = potentialGlobalIndex;
+        break;
+      }
+    }
+
+    if (!nextDrawerId) {
+      await updateGameSession(gameId, { status: 'game-over', currentWord: "Çizecek aktif oyuncu bulunamadı." });
+      return;
+    }
+
+    let newCurrentRound = gameData.currentRound;
+    if (activePlayerIdsInOriginalOrder.length === 1 && gameData.currentRound > 0) {
+      newCurrentRound++;
+    } else if (newCurrentPlayerGlobalIndex <= gameData.currentPlayerIndexInOrder && gameData.currentRound > 0 && activePlayerIdsInOriginalOrder.length > 1) {
+      newCurrentRound++;
+    }
+    
+    if (newCurrentRound > gameData.maxRounds) {
+      await updateGameSession(gameId, { status: 'game-over', currentWord: "Oyun Bitti!", currentDrawingDataUrl: "", currentDrawerId: "" });
+    } else {
+      await generateAndSetWord(gameId, 'medium'); 
+      await updateGameSession(gameId, {
+        status: 'drawing',
+        currentDrawerId: nextDrawerId,
+        currentRound: newCurrentRound,
+        currentPlayerIndexInOrder: newCurrentPlayerGlobalIndex,
+        guesses: [],
+        currentDrawingDataUrl: "", 
+        roundStartTime: serverTimestamp() as Timestamp,
+        roundResults: deleteField() 
+      });
+    }
+  } catch (error) {
+    console.error("Error in nextTurn service:", error);
+    throw error;
   }
 }
-
-    
