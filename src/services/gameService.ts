@@ -10,10 +10,10 @@ import {
   collection, 
   serverTimestamp, 
   arrayUnion,
-  onSnapshot,
+  onSnapshot, 
   type Unsubscribe,
   deleteField,
-  type Timestamp // Ensure Timestamp is imported if used directly as a type hint here
+  type Timestamp
 } from 'firebase/firestore';
 import { generateDrawingPrompt } from '@/ai/flows/generate-drawing-prompt'; // Kelime üretmek için
 
@@ -57,21 +57,24 @@ export async function joinGameSession(gameId: string, player: Player): Promise<{
 
   const gameData = gameSnap.data() as Game;
 
-  if (Object.keys(gameData.players).length >= gameData.settings.maxPlayers) {
+  if (Object.values(gameData.players).filter(p => p.isActive).length >= gameData.settings.maxPlayers && !gameData.players[player.id]?.isActive) {
     return { success: false, message: "Oyun dolu." };
   }
   
-  if (gameData.status !== 'lobby') {
+  if (gameData.status !== 'lobby' && !gameData.players[player.id]) { // Allow rejoining active players if they were disconnected
     return { success: false, message: "Oyun zaten başlamış." };
   }
 
   if (gameData.players[player.id]) {
+    // Player is rejoining
     await updateDoc(gameRef, {
       [`players.${player.id}.isActive`]: true,
+      // playerOrder should already contain this player
     });
     return { success: true, message: "Oyuna tekrar katıldınız."};
   }
 
+  // New player joining
   const newPlayerOrder = [...gameData.playerOrder, player.id];
   await updateDoc(gameRef, {
     [`players.${player.id}`]: { ...player, score: 0, isActive: true },
@@ -111,37 +114,37 @@ export async function addGuessToGame(gameId: string, playerId: string, displayNa
 
 export async function updatePlayerStatus(gameId: string, playerId: string, isActive: boolean): Promise<void> {
   const gameRef = doc(db, 'games', gameId);
-  await updateDoc(gameRef, {
+  const gameSnap = await getDoc(gameRef);
+  if (!gameSnap.exists()) return;
+  const gameData = gameSnap.data() as Game;
+
+  const updates: any = {
     [`players.${playerId}.isActive`]: isActive,
-  });
+  };
+
+  // If host becomes inactive, try to assign a new host
+  if (playerId === gameData.hostId && !isActive) {
+    const activePlayers = gameData.playerOrder.filter(id => id !== playerId && gameData.players[id]?.isActive);
+    if (activePlayers.length > 0) {
+      const newHostId = activePlayers[0];
+      updates.hostId = newHostId;
+      updates[`players.${newHostId}.isHost`] = true;
+      if(gameData.players[playerId]) {
+        updates[`players.${playerId}.isHost`] = false; 
+      }
+    } else {
+      // No other active players to become host, game might need to end or wait
+      updates.status = 'lobby'; // Or 'game-over' if no one can host
+    }
+  }
+  
+  await updateDoc(gameRef, updates);
 }
 
 export async function removePlayerFromGame(gameId: string, playerId: string): Promise<void> {
-  const gameRef = doc(db, 'games', gameId);
-  const gameSnap = await getDoc(gameRef);
-  if (gameSnap.exists()) {
-    const gameData = gameSnap.data() as Game;
-    const newPlayerOrder = gameData.playerOrder.filter(id => id !== playerId);
-    
-    let newHostId = gameData.hostId;
-    if (gameData.hostId === playerId && newPlayerOrder.length > 0) {
-      newHostId = newPlayerOrder[0]; 
-    }
-
-    const updates: any = {
-      [`players.${playerId}`]: deleteField(), 
-      playerOrder: newPlayerOrder,
-    };
-
-    if (newHostId !== gameData.hostId) {
-      updates.hostId = newHostId;
-      if (gameData.players[newHostId]) {
-        updates[`players.${newHostId}.isHost`] = true;
-      }
-    }
-    
-    await updateDoc(gameRef, updates);
-  }
+  // This function might be deprecated in favor of updatePlayerStatus(isActive: false)
+  // For now, it mimics setting isActive to false.
+  await updatePlayerStatus(gameId, playerId, false);
 }
 
 export async function generateAndSetWord(gameId: string, difficulty: 'easy' | 'medium' | 'hard' = 'medium'): Promise<string | null> {
@@ -166,16 +169,19 @@ export async function startGame(gameId: string): Promise<void> {
   if (!gameDoc.exists()) throw new Error("Oyun bulunamadı");
   const gameData = gameDoc.data() as Game;
 
-  if (gameData.playerOrder.length === 0) throw new Error("Oyuncu yok!");
+  const activePlayersInOrder = gameData.playerOrder.filter(pid => gameData.players[pid]?.isActive);
+  if (activePlayersInOrder.length === 0) throw new Error("Aktif oyuncu yok!");
 
-  const firstDrawerId = gameData.playerOrder[0];
+  const firstDrawerId = activePlayersInOrder[0];
+  const firstDrawerGlobalIndex = gameData.playerOrder.indexOf(firstDrawerId);
+
   await generateAndSetWord(gameId, 'medium'); 
 
   await updateGameSession(gameId, {
     status: 'drawing',
     currentDrawerId: firstDrawerId,
     currentRound: 1,
-    currentPlayerIndexInOrder: 0,
+    currentPlayerIndexInOrder: firstDrawerGlobalIndex, // Store index in original playerOrder
     guesses: [], 
     roundStartTime: serverTimestamp() as Timestamp,
   });
@@ -184,36 +190,63 @@ export async function startGame(gameId: string): Promise<void> {
 export async function nextTurn(gameId: string): Promise<void> {
   const gameDoc = await getDoc(doc(db, 'games', gameId));
   if (!gameDoc.exists()) throw new Error("Oyun bulunamadı");
-  const gameData = gameDoc.data() as Game;
+  let gameData = gameDoc.data() as Game; // Use let to allow re-assignment if needed after an update
 
-  let nextPlayerIndex = (gameData.currentPlayerIndexInOrder + 1);
-  let nextRound = gameData.currentRound;
+  const activePlayerIdsInOriginalOrder = gameData.playerOrder.filter(pid => gameData.players[pid]?.isActive);
 
-  const activePlayersOriginalOrder = gameData.playerOrder.filter(pid => gameData.players[pid]?.isActive);
-  if (activePlayersOriginalOrder.length === 0) {
+  if (activePlayerIdsInOriginalOrder.length === 0) {
     await updateGameSession(gameId, { status: 'game-over', currentWord: "Aktif oyuncu kalmadı." });
     return;
   }
-  
-  if (nextPlayerIndex >= activePlayersOriginalOrder.length) {
-    nextPlayerIndex = 0;
-    nextRound += 1;
+
+  let newCurrentPlayerGlobalIndex = gameData.currentPlayerIndexInOrder; // Index in original gameData.playerOrder
+  let nextDrawerId: string | undefined = undefined;
+
+  // Find the next active player in the original playerOrder, starting after the current one
+  for (let i = 1; i <= gameData.playerOrder.length; i++) {
+    const potentialGlobalIndex = (gameData.currentPlayerIndexInOrder + i) % gameData.playerOrder.length;
+    const potentialPlayerId = gameData.playerOrder[potentialGlobalIndex];
+    if (gameData.players[potentialPlayerId]?.isActive) {
+      nextDrawerId = potentialPlayerId;
+      newCurrentPlayerGlobalIndex = potentialGlobalIndex;
+      break;
+    }
   }
 
-  if (nextRound > gameData.maxRounds) {
+  if (!nextDrawerId) {
+    // This case should be caught by activePlayerIdsInOriginalOrder.length === 0, but as a fallback:
+    await updateGameSession(gameId, { status: 'game-over', currentWord: "Çizecek aktif oyuncu bulunamadı." });
+    return;
+  }
+
+  let newCurrentRound = gameData.currentRound;
+  // A round increments if the new designated drawer's index in the original order
+  // is less than or equal to the previous drawer's index, indicating a wrap-around.
+  // This also covers the case where the current drawer is the last in playerOrder.
+  // Also, if there's only one active player, each of their turns is a new round.
+  if (activePlayerIdsInOriginalOrder.length === 1 && gameData.currentRound > 0) {
+    // If only one active player, they start a new round each turn (after the first round has started).
+    newCurrentRound++;
+  } else if (newCurrentPlayerGlobalIndex <= gameData.currentPlayerIndexInOrder && gameData.currentRound > 0 && activePlayerIdsInOriginalOrder.length > 1) {
+    // If multiple active players and we've wrapped around the playerOrder list.
+    newCurrentRound++;
+  }
+  
+  if (newCurrentRound > gameData.maxRounds) {
     await updateGameSession(gameId, { status: 'game-over', currentWord: "Oyun Bitti!", currentDrawingDataUrl: "", currentDrawerId: "" });
   } else {
-    const nextDrawerId = activePlayersOriginalOrder[nextPlayerIndex];
-    await generateAndSetWord(gameId, 'medium');
+    await generateAndSetWord(gameId, 'medium'); // Consider using a difficulty from gameData.settings if available
     await updateGameSession(gameId, {
       status: 'drawing',
       currentDrawerId: nextDrawerId,
-      currentRound: nextRound,
-      // Ensure currentPlayerIndexInOrder refers to the index in the *original* playerOrder array
-      currentPlayerIndexInOrder: gameData.playerOrder.indexOf(nextDrawerId), 
+      currentRound: newCurrentRound,
+      currentPlayerIndexInOrder: newCurrentPlayerGlobalIndex,
       guesses: [],
       currentDrawingDataUrl: "", 
       roundStartTime: serverTimestamp() as Timestamp,
+      roundResults: deleteField() // Clear previous round results
     });
   }
 }
+
+    
